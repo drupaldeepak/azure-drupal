@@ -28,7 +28,7 @@ class DefaultsConfigurator extends AbstractServiceConfigurator
 
     private ?string $path;
 
-    public function __construct(ServicesConfigurator $parent, Definition $definition, ?string $path = null)
+    public function __construct(ServicesConfigurator $parent, Definition $definition, string $path = null)
     {
         parent::__construct($parent, $definition, null, []);
 
@@ -63,14 +63,13 @@ class DefaultsConfigurator extends AbstractServiceConfigurator
         return $this->parent->instanceof($fqcn);
     }
 
-    private function validateAttributes(string $tag, array $attributes, array $path = []): void
+    private function validateAttributes(string $tagName, array $attributes, string $prefix = ''): void
     {
-        foreach ($attributes as $name => $value) {
+        foreach ($attributes as $attribute => $value) {
             if (\is_array($value)) {
-                $this->validateAttributes($tag, $value, [...$path, $name]);
+                $this->validateAttributes($tagName, $value, $attribute.'.');
             } elseif (!\is_scalar($value ?? '')) {
-                $name = implode('.', [...$path, $name]);
-                throw new InvalidArgumentException(sprintf('Tag "%s", attribute "%s" in "_defaults" must be of a scalar-type or an array of scalar-type.', $tag, $name));
+                throw new InvalidArgumentException(sprintf('Tag "%s", attribute "%s" in "_defaults" must be of a scalar-type or an array of scalar-type.', $tagName, $prefix.$attribute));
             }
         }
     }

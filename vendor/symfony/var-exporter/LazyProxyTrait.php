@@ -15,19 +15,18 @@ use Symfony\Component\VarExporter\Hydrator as PublicHydrator;
 use Symfony\Component\VarExporter\Internal\Hydrator;
 use Symfony\Component\VarExporter\Internal\LazyObjectRegistry as Registry;
 use Symfony\Component\VarExporter\Internal\LazyObjectState;
-use Symfony\Component\VarExporter\Internal\LazyObjectTrait;
 
 trait LazyProxyTrait
 {
-    use LazyObjectTrait;
+    private LazyObjectState $lazyObjectState;
+    private object $lazyObjectReal;
 
     /**
      * Creates a lazy-loading virtual proxy.
      *
      * @param \Closure():object $initializer Returns the proxied object
-     * @param static|null       $instance
      */
-    public static function createLazyProxy(\Closure $initializer, ?object $instance = null): static
+    public static function createLazyProxy(\Closure $initializer, self $instance = null): static
     {
         if (self::class !== $class = $instance ? $instance::class : static::class) {
             $skippedProperties = ["\0".self::class."\0lazyObjectState" => true];
@@ -52,7 +51,11 @@ trait LazyProxyTrait
      */
     public function isLazyObjectInitialized(bool $partial = false): bool
     {
-        return !isset($this->lazyObjectState) || isset($this->lazyObjectState->realInstance) || Registry::$noInitializerState === $this->lazyObjectState->initializer;
+        if (!isset($this->lazyObjectState) || Registry::$noInitializerState === $this->lazyObjectState) {
+            return true;
+        }
+
+        return \array_key_exists("\0".self::class."\0lazyObjectReal", (array) $this);
     }
 
     /**
@@ -60,8 +63,8 @@ trait LazyProxyTrait
      */
     public function initializeLazyObject(): parent
     {
-        if ($state = $this->lazyObjectState ?? null) {
-            return $state->realInstance ??= ($state->initializer)();
+        if (isset($this->lazyObjectReal)) {
+            return $this->lazyObjectReal;
         }
 
         return $this;
@@ -72,11 +75,13 @@ trait LazyProxyTrait
      */
     public function resetLazyObject(): bool
     {
-        if (!isset($this->lazyObjectState) || Registry::$noInitializerState === $this->lazyObjectState->initializer) {
+        if (!isset($this->lazyObjectState) || Registry::$noInitializerState === $this->lazyObjectState) {
             return false;
         }
 
-        unset($this->lazyObjectState->realInstance);
+        if (\array_key_exists("\0".self::class."\0lazyObjectReal", (array) $this)) {
+            unset($this->lazyObjectReal);
+        }
 
         return true;
     }
@@ -92,7 +97,14 @@ trait LazyProxyTrait
 
             if (null === $scope || isset($propertyScopes["\0$scope\0$name"])) {
                 if ($state = $this->lazyObjectState ?? null) {
-                    $instance = $state->realInstance ??= ($state->initializer)();
+                    if ('lazyObjectReal' === $name && self::class === $scope) {
+                        $this->lazyObjectReal = ($state->initializer)();
+
+                        return $this->lazyObjectReal;
+                    }
+                    if (isset($this->lazyObjectReal)) {
+                        $instance = $this->lazyObjectReal;
+                    }
                 }
                 $parent = 2;
                 goto get_in_scope;
@@ -100,8 +112,8 @@ trait LazyProxyTrait
         }
         $parent = (Registry::$parentMethods[self::class] ??= Registry::getParentMethods(self::class))['get'];
 
-        if ($state = $this->lazyObjectState ?? null) {
-            $instance = $state->realInstance ??= ($state->initializer)();
+        if (isset($this->lazyObjectReal)) {
+            $instance = $this->lazyObjectReal;
         } else {
             if (2 === $parent) {
                 return parent::__get($name);
@@ -118,37 +130,17 @@ trait LazyProxyTrait
 
         get_in_scope:
 
-        try {
-            if (null === $scope) {
-                if (null === $readonlyScope && 1 !== $parent) {
-                    return $instance->$name;
-                }
-                $value = $instance->$name;
-
-                return $value;
+        if (null === $scope) {
+            if (null === $readonlyScope && 1 !== $parent) {
+                return $instance->$name;
             }
-            $accessor = Registry::$classAccessors[$scope] ??= Registry::getClassAccessors($scope);
+            $value = $instance->$name;
 
-            return $accessor['get']($instance, $name, null !== $readonlyScope || 1 === $parent);
-        } catch (\Error $e) {
-            if (\Error::class !== $e::class || !str_starts_with($e->getMessage(), 'Cannot access uninitialized non-nullable property')) {
-                throw $e;
-            }
-
-            try {
-                if (null === $scope) {
-                    $instance->$name = [];
-
-                    return $instance->$name;
-                }
-
-                $accessor['set']($instance, $name, []);
-
-                return $accessor['get']($instance, $name, null !== $readonlyScope || 1 === $parent);
-            } catch (\Error) {
-                throw $e;
-            }
+            return $value;
         }
+        $accessor = Registry::$classAccessors[$scope] ??= Registry::getClassAccessors($scope);
+
+        return $accessor['get']($instance, $name, null !== $readonlyScope || 1 === $parent);
     }
 
     public function __set($name, $value): void
@@ -161,15 +153,22 @@ trait LazyProxyTrait
             $scope = Registry::getScope($propertyScopes, $class, $name, $readonlyScope);
 
             if ($readonlyScope === $scope || isset($propertyScopes["\0$scope\0$name"])) {
-                if ($state = $this->lazyObjectState ?? null) {
-                    $instance = $state->realInstance ??= ($state->initializer)();
+                if (isset($this->lazyObjectState)) {
+                    if ('lazyObjectReal' === $name && self::class === $scope) {
+                        $this->lazyObjectReal = $value;
+
+                        return;
+                    }
+                    if (isset($this->lazyObjectReal)) {
+                        $instance = $this->lazyObjectReal;
+                    }
                 }
                 goto set_in_scope;
             }
         }
 
-        if ($state = $this->lazyObjectState ?? null) {
-            $instance = $state->realInstance ??= ($state->initializer)();
+        if (isset($this->lazyObjectReal)) {
+            $instance = $this->lazyObjectReal;
         } elseif ((Registry::$parentMethods[self::class] ??= Registry::getParentMethods(self::class))['set']) {
             parent::__set($name, $value);
 
@@ -196,15 +195,22 @@ trait LazyProxyTrait
             $scope = Registry::getScope($propertyScopes, $class, $name);
 
             if (null === $scope || isset($propertyScopes["\0$scope\0$name"])) {
-                if ($state = $this->lazyObjectState ?? null) {
-                    $instance = $state->realInstance ??= ($state->initializer)();
+                if (isset($this->lazyObjectState)) {
+                    if ('lazyObjectReal' === $name && self::class === $scope) {
+                        $state = $this->lazyObjectState ?? null;
+
+                        return null !== $this->lazyObjectReal = $state ? ($state->initializer)() : null;
+                    }
+                    if (isset($this->lazyObjectReal)) {
+                        $instance = $this->lazyObjectReal;
+                    }
                 }
                 goto isset_in_scope;
             }
         }
 
-        if ($state = $this->lazyObjectState ?? null) {
-            $instance = $state->realInstance ??= ($state->initializer)();
+        if (isset($this->lazyObjectReal)) {
+            $instance = $this->lazyObjectReal;
         } elseif ((Registry::$parentMethods[self::class] ??= Registry::getParentMethods(self::class))['isset']) {
             return parent::__isset($name);
         }
@@ -229,15 +235,22 @@ trait LazyProxyTrait
             $scope = Registry::getScope($propertyScopes, $class, $name, $readonlyScope);
 
             if ($readonlyScope === $scope || isset($propertyScopes["\0$scope\0$name"])) {
-                if ($state = $this->lazyObjectState ?? null) {
-                    $instance = $state->realInstance ??= ($state->initializer)();
+                if (isset($this->lazyObjectState)) {
+                    if ('lazyObjectReal' === $name && self::class === $scope) {
+                        unset($this->lazyObjectReal);
+
+                        return;
+                    }
+                    if (isset($this->lazyObjectReal)) {
+                        $instance = $this->lazyObjectReal;
+                    }
                 }
                 goto unset_in_scope;
             }
         }
 
-        if ($state = $this->lazyObjectState ?? null) {
-            $instance = $state->realInstance ??= ($state->initializer)();
+        if (isset($this->lazyObjectReal)) {
+            $instance = $this->lazyObjectReal;
         } elseif ((Registry::$parentMethods[self::class] ??= Registry::getParentMethods(self::class))['unset']) {
             parent::__unset($name);
 
@@ -264,30 +277,26 @@ trait LazyProxyTrait
             return;
         }
 
-        $this->lazyObjectState = clone $this->lazyObjectState;
-
-        if (isset($this->lazyObjectState->realInstance)) {
-            $this->lazyObjectState->realInstance = clone $this->lazyObjectState->realInstance;
+        if (\array_key_exists("\0".self::class."\0lazyObjectReal", (array) $this)) {
+            $this->lazyObjectReal = clone $this->lazyObjectReal;
+        }
+        if ($state = $this->lazyObjectState ?? null) {
+            $this->lazyObjectState = clone $state;
         }
     }
 
     public function __serialize(): array
     {
         $class = self::class;
-        $state = $this->lazyObjectState ?? null;
 
-        if (!$state && (Registry::$parentMethods[$class] ??= Registry::getParentMethods($class))['serialize']) {
+        if (!isset($this->lazyObjectReal) && (Registry::$parentMethods[$class] ??= Registry::getParentMethods($class))['serialize']) {
             $properties = parent::__serialize();
         } else {
             $properties = (array) $this;
-
-            if ($state) {
-                unset($properties["\0$class\0lazyObjectState"]);
-                $properties["\0$class\0lazyObjectReal"] = $state->realInstance ??= ($state->initializer)();
-            }
         }
+        unset($properties["\0$class\0lazyObjectState"]);
 
-        if ($state || Registry::$parentMethods[$class]['serialize'] || !Registry::$parentMethods[$class]['sleep']) {
+        if (isset($this->lazyObjectReal) || Registry::$parentMethods[$class]['serialize'] || !Registry::$parentMethods[$class]['sleep']) {
             return $properties;
         }
 
@@ -295,7 +304,7 @@ trait LazyProxyTrait
         $data = [];
 
         foreach (parent::__sleep() as $name) {
-            $value = $properties[$k = $name] ?? $properties[$k = "\0*\0$name"] ?? $properties[$k = "\0$class\0$name"] ?? $properties[$k = "\0$scope\0$name"] ?? $k = null;
+            $value = $properties[$k = $name] ?? $properties[$k = "\0*\0$name"] ?? $properties[$k = "\0$scope\0$name"] ?? $k = null;
 
             if (null === $k) {
                 trigger_error(sprintf('serialize(): "%s" returned as member variable from __sleep() but does not exist', $name), \E_USER_NOTICE);
@@ -311,25 +320,24 @@ trait LazyProxyTrait
     {
         $class = self::class;
 
-        if ($instance = $data["\0$class\0lazyObjectReal"] ?? null) {
-            unset($data["\0$class\0lazyObjectReal"]);
-
+        if (isset($data["\0$class\0lazyObjectReal"])) {
             foreach (Registry::$classResetters[$class] ??= Registry::getClassResetters($class) as $reset) {
                 $reset($this, $data);
             }
 
-            if ($data) {
+            if (1 < \count($data)) {
                 PublicHydrator::hydrate($this, $data);
+            } else {
+                $this->lazyObjectReal = $data["\0$class\0lazyObjectReal"];
             }
-            $this->lazyObjectState = new LazyObjectState(Registry::$noInitializerState ??= static fn () => throw new \LogicException('Lazy proxy has no initializer.'));
-            $this->lazyObjectState->realInstance = $instance;
+            $this->lazyObjectState = Registry::$noInitializerState ??= new LazyObjectState(static fn () => throw new \LogicException('Lazy proxy has no initializer.'));
         } elseif ((Registry::$parentMethods[$class] ??= Registry::getParentMethods($class))['unserialize']) {
             parent::__unserialize($data);
         } else {
             PublicHydrator::hydrate($this, $data);
 
             if (Registry::$parentMethods[$class]['wakeup']) {
-                parent::__wakeup();
+                parent:__wakeup();
             }
         }
     }

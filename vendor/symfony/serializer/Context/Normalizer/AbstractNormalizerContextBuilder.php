@@ -164,13 +164,4 @@ abstract class AbstractNormalizerContextBuilder implements ContextBuilderInterfa
     {
         return $this->with(AbstractNormalizer::IGNORED_ATTRIBUTES, $ignoredAttributes);
     }
-
-    /**
-     * Configures requiring all properties to be listed in the input instead
-     * of falling back to null for nullable ones.
-     */
-    public function withRequireAllProperties(?bool $requireAllProperties = true): static
-    {
-        return $this->with(AbstractNormalizer::REQUIRE_ALL_PROPERTIES, $requireAllProperties);
-    }
 }

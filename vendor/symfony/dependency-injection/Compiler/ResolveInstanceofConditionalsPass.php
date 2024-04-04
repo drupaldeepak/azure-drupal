@@ -24,9 +24,6 @@ use Symfony\Component\DependencyInjection\Exception\RuntimeException;
  */
 class ResolveInstanceofConditionalsPass implements CompilerPassInterface
 {
-    /**
-     * @return void
-     */
     public function process(ContainerBuilder $container)
     {
         foreach ($container->getAutoconfiguredInstanceof() as $interface => $definition) {
@@ -87,7 +84,7 @@ class ResolveInstanceofConditionalsPass implements CompilerPassInterface
                 $instanceofDef->setAbstract(true)->setParent($parent ?: '.abstract.instanceof.'.$id);
                 $parent = '.instanceof.'.$interface.'.'.$key.'.'.$id;
                 $container->setDefinition($parent, $instanceofDef);
-                $instanceofTags[] = [$interface, $instanceofDef->getTags()];
+                $instanceofTags[] = $instanceofDef->getTags();
                 $instanceofBindings = $instanceofDef->getBindings() + $instanceofBindings;
 
                 foreach ($instanceofDef->getMethodCalls() as $methodCall) {
@@ -126,11 +123,10 @@ class ResolveInstanceofConditionalsPass implements CompilerPassInterface
             // Don't add tags to service decorators
             $i = \count($instanceofTags);
             while (0 <= --$i) {
-                [$interface, $tags] = $instanceofTags[$i];
-                foreach ($tags as $k => $v) {
-                    if (null === $definition->getDecoratedService() || $interface === $definition->getClass() || \in_array($k, $tagsToKeep, true)) {
+                foreach ($instanceofTags[$i] as $k => $v) {
+                    if (null === $definition->getDecoratedService() || \in_array($k, $tagsToKeep, true)) {
                         foreach ($v as $v) {
-                            if ($definition->hasTag($k) && \in_array($v, $definition->getTag($k))) {
+                            if ($definition->hasTag($k) && (!$v || \in_array($v, $definition->getTag($k)))) {
                                 continue;
                             }
                             $definition->addTag($k, $v);
@@ -158,7 +154,7 @@ class ResolveInstanceofConditionalsPass implements CompilerPassInterface
     private function mergeConditionals(array $autoconfiguredInstanceof, array $instanceofConditionals, ContainerBuilder $container): array
     {
         // make each value an array of ChildDefinition
-        $conditionals = array_map(fn ($childDef) => [$childDef], $autoconfiguredInstanceof);
+        $conditionals = array_map(function ($childDef) { return [$childDef]; }, $autoconfiguredInstanceof);
 
         foreach ($instanceofConditionals as $interface => $instanceofDef) {
             // make sure the interface/class exists (but don't validate automaticInstanceofConditionals)
